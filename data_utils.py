@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from img_utils import process_image
+from DQN_model import pos_labels
+from img_utils import process_image, reduce_dim
 
-root_path = "/Volumes/CPSC587DATA/RecordedImg"
+root_path = "/Volumes/CPSC587DATA/TRAINING_IMAGES"
 
 
 def create_index_csv():
@@ -16,7 +17,7 @@ def create_index_csv():
         fieldnames = ['filename', 'label']
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
-        for label in ['OFF_LEFT', 'OFF_RIGHT', 'ON_ROAD']:
+        for label in pos_labels:
             path = join(root_path, label)
             jpg_files = [join(path, f) for f in os.listdir(path) if
                          isfile(join(path, f)) and f.endswith('.jpg')]
@@ -30,7 +31,8 @@ def load_image_data():
     img_array_list = []
     for file in info['filename']:
         img = Image.open(file)
-        img_array_list.append(process_image(img))
+        img = process_image(img)
+        img_array_list.append([reduce_dim(img)])
     img_data = np.concatenate(tuple(img_array_list), axis=0)
     labels = np.array(info['label'])
     return img_data, labels
