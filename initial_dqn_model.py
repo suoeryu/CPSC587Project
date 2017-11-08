@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 from keras import backend as K
 
-import DQN_model
+import q_learning_model
 from img_utils import process_image
 
 path_list = [
@@ -29,7 +29,7 @@ sess = tf.Session(config=config)
 
 K.set_session(sess)
 
-model = DQN_model.build_model(0.0001)
+model = q_learning_model.build_model(0.0001)
 
 for epoch in range(10):
     for path in path_list:
@@ -46,9 +46,9 @@ for epoch in range(10):
         state = [state_img, state_info]
         car_pos_idx = np.asarray(info['car_pos_idx'])
 
-        loss = DQN_model.train_position_part(model, state, car_pos_idx)
+        loss = q_learning_model.train_position_part(model, state, car_pos_idx)
         print("Training on {}, data number {}, loss {}".format(path, state[0].shape[0], loss))
     print('Save model...')
-    model.save_weights(DQN_model.saved_model_name, overwrite=True)
-    with open("DQN_model.json", "w") as outfile:
+    model.save_weights(q_learning_model.saved_name, overwrite=True)
+    with open("action_model.json", "w") as outfile:
         json.dump(model.to_json(), outfile)

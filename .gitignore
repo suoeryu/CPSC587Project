@@ -1,3 +1,7 @@
 __pycache__/
 .python-version
 .idea/
+position_model.json
+position_model.h5-*
+q_learning_model.json
+q_learning_model.h5*

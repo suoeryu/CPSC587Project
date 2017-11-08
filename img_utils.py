@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageTk
 
-import car_position
+import position
 
 IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS = 66, 200, 3
 
@@ -54,7 +54,7 @@ class ImageChecker:
         self.pos_var.set(self.info['car_pos_idx'][self.index])
         self.radio_frame = tk.Frame(self.window)
         self.radio_frame.pack(side="top")
-        for pos_idx, text in enumerate(car_position.pos_labels):
+        for pos_idx, text in enumerate(position.pos_labels):
             radio_button = tk.Radiobutton(self.radio_frame, text=text, variable=self.pos_var,
                                           value=pos_idx, command=self.pos_selection)
             radio_button.pack(side="left")
@@ -105,7 +105,7 @@ class ImageChecker:
 
 if __name__ == '__main__':
     folder_list = [
-        '/Volumes/CPSC587DATA/TRAINING_IMAGES',
+        '/Volumes/CPSC587DATA/RecordedImg',
     ]
     for folder in folder_list:
         ImageChecker(folder)
