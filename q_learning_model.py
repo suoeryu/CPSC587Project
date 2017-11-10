@@ -1,7 +1,6 @@
 import csv
 import random
 import os
-import threading
 from collections import deque
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -17,32 +16,31 @@ from keras.utils import to_categorical
 import position
 from action import ACTION_NUM
 from position import POS_NUM
-from img_utils import IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS
+from data_utils import IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS, load_data
 
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 32
 GAMMA = 0.99
-
-OBSERVATION = 10000
 
 reward_dict = {'ON': 0.5, 'LEFT': -0.5, 'RIGHT': -0.5, 'OFF': -1}
 
 saved_h5_name = 'q_learning_model.h5'
 saved_json_name = 'q_learning_model.json'
 
-csv_fieldnames = ['filename', 'car_pos_idx', 'steering_angle', 'throttle', 'speed', 'action',
-                  'reward', 'next_filename']
-
 
 class ReplayMemory:
     def __init__(self, store_folder, max_num=50000) -> None:
+        self.csv_fieldnames = ['cur_filename', 'cur_pos_idx',
+                               'cur_steering_angle', 'cur_throttle', 'cur_speed',
+                               'action', 'reward', 'next_filename', 'next_pos_idx',
+                               'next_steering_angle', 'next_throttle', 'next_speed']
         self.memory = deque()
         self.max_num = max_num
         self.store_folder = store_folder
         if store_folder:
             self.csv_path = os.path.join(store_folder, 'info.csv')
             with open(self.csv_path, 'w') as csv_file:
-                writer = csv.DictWriter(csv_file, fieldnames=csv_fieldnames)
+                writer = csv.DictWriter(csv_file, fieldnames=self.csv_fieldnames)
                 writer.writeheader()
         self.thread_pool = ThreadPoolExecutor(4)
 
@@ -62,45 +60,49 @@ class ReplayMemory:
         self.reward = reward
         self.next_state = state
         if self.state is not None and self.action is not None:
+            cur_state_info = np.squeeze(self.state[1])
+            next_state_info = np.squeeze(self.next_state[1])
             self.memory.append(
-                (self.state, self.pos_idx, self.action, self.reward, self.next_state))
-            if self.store_folder:
-                with open(self.csv_path, 'a') as csv_file:
-                    csv_writer = csv.DictWriter(csv_file, fieldnames=csv_fieldnames)
-                    csv_writer.writerow({'filename': self.filename,
-                                         'car_pos_idx': self.pos_idx,
-                                         'steering_angle': state[1][0][0],
-                                         'throttle': state[1][0][1],
-                                         'speed': state[1][0][2],
-                                         'action': action,
-                                         'next_filename': img_filename,
-                                         'reward': reward,
-                                         })
+                {"cur_filename": self.filename,
+                 # "cur_state": self.state,
+                 "cur_pos_idx": self.pos_idx,
+                 'cur_steering_angle': cur_state_info[0],
+                 'cur_throttle': cur_state_info[1],
+                 'cur_speed': cur_state_info[2],
+                 "action": self.action,
+                 "reward": self.reward,
+                 "next_filename": img_filename,
+                 "next_pos_idx": pos_idx,
+                 "next_steering_angle": next_state_info[0],
+                 'next_throttle': next_state_info[1],
+                 'next_speed': next_state_info[2],
+                 # "next_state": self.next_state,
+                 })
             if len(self.memory) > self.max_num:
                 self.memory.popleft()
-        self.state = state
         self.filename = img_filename
+        self.state = state
         self.pos_idx = pos_idx
         self.action = action
 
     def get_mini_batch(self, k=BATCH_SIZE):
-        return random.sample(self.memory, k) if len(self.memory) > k else None
+        return random.sample(self.memory, k) if len(self.memory) > k * 4 else None
+
+    def store_mini_batch(self, k=BATCH_SIZE):
+        samples = random.sample(self.memory, k) if len(self.memory) > k * 4 else None
+        if samples is not None:
+            with open(self.csv_path, 'a') as csv_file:
+                csv_writer = csv.DictWriter(csv_file, fieldnames=self.csv_fieldnames)
+                csv_writer.writerows(samples)
 
     def save_img(self, img_orig):
         if self.store_folder:
-            filename = '{}.jpg'.format(datetime.now().strftime('%Y_%m_%d_%H_%M_%S_%f')[:-3])
+            filename = '{}.jpg'.format(datetime.now().strftime('%Y%m%d%H%M%S.%f')[:-3])
             full_path = os.path.join(self.store_folder, filename)
             self.thread_pool.submit(lambda: img_orig.save(full_path))
-            # img_orig.save(os.path.join(self.store_folder, filename))
             return filename
         else:
             return None
-
-
-def compute_reward(car_pos, speed):
-    reward = reward_dict[car_pos]
-    reward = reward + speed / 100
-    return reward
 
 
 def build_model(learn_rate=LEARNING_RATE):
@@ -125,19 +127,26 @@ def build_model(learn_rate=LEARNING_RATE):
 
     img_values = Flatten()(img_values)
 
+    pos_values = BatchNormalization()(img_values)
+    pos_hidden_layer = Dense(64, activation='relu')
+    pos_values = pos_hidden_layer(pos_values)
+
+    pos_output_layer = Dense(POS_NUM, activation='relu')
+    output_pos = pos_output_layer(pos_values)
+
     input_info = Input(shape=(3,))
-    info_values = input_info
+    info_values = BatchNormalization()(input_info)
 
-    values_comb = concatenate([img_values, info_values], axis=-1)
-    values = BatchNormalization()(values_comb)
+    act_values = concatenate([img_values, info_values], axis=-1)
+    act_values = BatchNormalization()(act_values)
 
-    hidden_layer = Dense(512, activation='relu')
-    values = hidden_layer(values)
+    act_hidden_layer = Dense(512, activation='relu')
+    act_values = act_hidden_layer(act_values)
 
-    output_layer = Dense(ACTION_NUM, activation='relu')
-    output = output_layer(values)
+    act_output_layer = Dense(ACTION_NUM, activation='relu')
+    output_act = act_output_layer(act_values)
 
-    model = Model(inputs=[input_img, input_info], outputs=output)
+    model = Model(inputs=[input_img, input_info], outputs=[output_pos, output_act])
 
     adam = Adam(lr=learn_rate)
     model.compile(loss='mse', optimizer=adam)
@@ -147,34 +156,35 @@ def build_model(learn_rate=LEARNING_RATE):
     return model
 
 
-lock = threading.Lock()
+def train_model(model, data_folder, batch_size=BATCH_SIZE, check=False):
+    info, img_map = load_data(data_folder, check)
+    n_rows = info.shape[0]
+    for start in range(0, n_rows, batch_size):
+        end = start + batch_size
+        if end > n_rows:
+            end = n_rows
+        sl = slice(start, end)
+        file_names = info['cur_filename'][sl]
+        input_img = np.concatenate([i for i in map(lambda x: img_map[x], file_names)], axis=0)
+        input_info = np.asarray(info[['cur_steering_angle', 'cur_throttle', 'cur_speed']][sl])
+        state = [input_img, input_info]
+        output_pos = to_categorical(info['cur_pos_idx'][sl], num_classes=POS_NUM)
+        _, output_act = model.predict([input_img, input_info])
 
-
-def train_model(model, replay_memory, batch_size=BATCH_SIZE):
-    mini_batch = replay_memory.get_mini_batch()
-    if mini_batch is not None:
-        t1 = datetime.now()
-        inputs_img = np.zeros((batch_size, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS))
-        inputs_info = np.zeros((batch_size, 3))
-        outputs = np.zeros((batch_size, ACTION_NUM))
-        for i in range(batch_size):
-            state = mini_batch[i][0]
-            pos_idx = mini_batch[i][1]
-            action = mini_batch[i][2]
-            reward = mini_batch[i][3]
-            next_state = mini_batch[i][4]
-            inputs_img[i:i + 1] = state[0]
-            inputs_info[i:i + 1] = state[1]
-            car_pos = position.get_label(pos_idx)
-            if car_pos == 'OFF':
-                outputs[i, action] = reward
+        next_imgs = [i for i in map(lambda x: img_map[x], info['next_filename'][sl])]
+        next_infos = np.asarray(info[['next_steering_angle', 'next_throttle', 'next_speed']][sl])
+        for index, row in info[['cur_pos_idx', 'action', 'reward']][sl].iterrows():
+            index = index - start
+            action = int(row['action'])
+            pos = position.get_label(int(row['cur_pos_idx']))
+            reward = row['reward']
+            if pos == 'OFF':
+                output_act[index, action] = reward
             else:
-                q_sa = model.predict(next_state)
-                outputs[i, action] = reward + GAMMA * np.max(q_sa)
-        inputs = [inputs_img, inputs_info]
-        t2 = datetime.now()
-        with lock:
-            loss = model.train_on_batch(inputs, outputs)
-        t3 = datetime.now()
-        print("Prepare time: {}".format(t2 - t1))
-        print("Train time: {}".format(t3 - t2))
+                next_state = [next_imgs[index], next_infos[index:index + 1]]
+                _, q_sa = model.predict(next_state)
+                output_act[index, action] = reward + GAMMA * np.max(q_sa)
+        output = [output_pos, output_act]
+        loss = model.train_on_batch(state, output)
+        print("Iter:{:4} Loss: {:.6f}, pos loss {:.6f} act loss {:.6f}".format(
+            int(start / batch_size), *loss))

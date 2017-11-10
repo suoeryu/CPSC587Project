@@ -11,6 +11,10 @@ def get_label(index):
     return pos_labels[index]
 
 
+def compute_reward(pos_idx, speed):
+    return -0.2 + speed / 28 if pos_idx else -0.3 - speed / 40
+
+
 if __name__ == '__main__':
     print(get_index('ON'))
     print(get_index('OFF'))

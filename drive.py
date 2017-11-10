@@ -1,48 +1,38 @@
 import argparse
 import base64
-import csv
-import json
-import random
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 import os
+import random
 import shutil
 import traceback
-
-import socketio
-import eventlet.wsgi
-from PIL import Image
-from flask import Flask
 from io import BytesIO
 
+import eventlet.wsgi
 import numpy as np
+import socketio
 import tensorflow as tf
-from sklearn.externals import joblib
+from PIL import Image
+from flask import Flask
 
-import q_learning_model
 import position
-import position_model
-from action import generate_hardcoded_action, get_control_value, ACTION_NUM
-from img_utils import process_image, reduce_dim
+import q_learning_model
+from action import get_control_value, ACTION_NUM
+from data_utils import process_image
 
 sio = socketio.Server()
 app = Flask(__name__)
 
 FRAME_PER_ACTION = 1
 FINAL_EPSILON = 0.0001  # final value of epsilon
-INITIAL_EPSILON = 0.1  # starting value of epsilon
+INITIAL_EPSILON = 0.2  # starting value of epsilon
 EXPLORE = 3000000.  # frames over which to anneal epsilon
-OBSERVE = q_learning_model.OBSERVATION
 
 t = 0
 epsilon = INITIAL_EPSILON
 
 replay_memory = None
-cpd_model = None
+# cpd_model = None
 pm = None
 qlm = None
-
-thread_pool = ThreadPoolExecutor(4)
 
 
 @sio.on('telemetry')
@@ -54,48 +44,43 @@ def telemetry(sid, data):
         throttle = float(data["throttle"])
         # The current speed of the car
         speed = float(data["speed"])
-        # print(data)
         try:
             global t, epsilon
             img_orig = Image.open(BytesIO(base64.b64decode(data["image"])))
             img = process_image(img_orig)
-            car_pos = cpd_model.predict([reduce_dim(img)])[0]
-            car_pos_idx = 1 if car_pos == 'ON' else 0
 
             state_img = np.expand_dims(img, 0)
             state_info = np.array([[steering_angle, throttle, speed]])
             state = [state_img, state_info]
-            pos_idx = np.argmax(pm.predict(state_img), axis=1)[0]
 
-            reward = q_learning_model.compute_reward(car_pos, speed)
+            pos_out, act_out = qlm.predict(state)
+            pos_idx = np.argmax(pos_out, axis=1)[0]
+            reward = position.compute_reward(pos_idx, speed)
 
-            if t < OBSERVE:  # observing, using hardcoded action
-                action = generate_hardcoded_action(car_pos, speed)
-                msg = "{:6} OBSERVING {:5} {:3} Hardcoded Action: {}->{}"
+            if random.random() <= epsilon:
+                action = random.randrange(ACTION_NUM)
+                msg = "{:6} EXPLORING {:3} Random Action:    {}->{}"
             else:
-                if random.random() <= epsilon:
-                    action = random.randrange(ACTION_NUM)
-                    msg = "{:6} EXPLORING {:5} {:3} Random Action:    {}->{}"
-                else:
-                    action = np.argmax(qlm.predict(state))
-                    msg = "{:6} TRAINING  {:5} {:3} Predict Action:   {}->{}"
+                action = np.argmax(act_out, axis=1)[0]
+                msg = "{:6} TESTING   {:3} Predict Action:   {}->{}"
 
-                # We reduced the epsilon gradually
-                if epsilon > FINAL_EPSILON and t > OBSERVE:
-                    epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
+            # We reduced the epsilon gradually
+            if epsilon > FINAL_EPSILON:
+                epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
 
             replay_memory.memorize(reward, img_orig, state, pos_idx, action)
 
-            q_learning_model.train_model(qlm, replay_memory)
+            replay_memory.store_mini_batch()
+            # q_learning_model.train_model(qlm, replay_memory)
 
-            if t % 1000 == 0:
-                print("Now we save model")
-                qlm.save_weights(q_learning_model.saved_h5_name, overwrite=True)
-                with open(q_learning_model.saved_json_name, "w") as outfile:
-                    json.dump(qlm.to_json(), outfile)
+            # if t % 1000 == 0:
+            #     print("Now we save model")
+            #     qlm.save_weights(q_learning_model.saved_h5_name, overwrite=True)
+            #     with open(q_learning_model.saved_json_name, "w") as outfile:
+            #         json.dump(qlm.to_json(), outfile)
 
             control_value = get_control_value(action)
-            print(msg.format(t, car_pos, position.get_label(pos_idx), action, control_value))
+            print(msg.format(t, position.get_label(pos_idx), action, control_value))
 
             send_control(*control_value)
 
@@ -137,7 +122,7 @@ if __name__ == '__main__':
         '-s', '--image-folder',
         type=str,
         nargs='?',
-        default='',
+        required=True,
         help='Path to image folder. This is where the images from the run will be saved.'
     )
     args = parser.parse_args()
@@ -156,14 +141,8 @@ if __name__ == '__main__':
     from keras import backend as K
 
     K.set_session(sess)
-    cpd_model = joblib.load('car_pos_detection.pkl')
 
     replay_memory = q_learning_model.ReplayMemory(args.image_folder)
-
-    pm = position_model.build_model()
-    if os.path.exists(position_model.saved_h5_name):
-        print('load position model')
-        pm.load_weights(position_model.saved_h5_name)
 
     qlm = q_learning_model.build_model()
     if os.path.exists(q_learning_model.saved_h5_name):
