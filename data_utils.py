@@ -59,7 +59,7 @@ class ImageChecker:
         self.window.bind('p', lambda e: self.prev_image())
         self.window.bind('1', lambda e: self.select_pos(0))
         self.window.bind('2', lambda e: self.select_pos(1))
-        # self.window.bind('3', lambda e: self.select_pos(2))
+        self.window.bind('3', lambda e: self.select_pos(2))
         # self.window.bind('4', lambda e: self.select_pos(3))
         self.window.bind('s', lambda e: self.save_csv())
         self.window.mainloop()
@@ -70,15 +70,13 @@ class ImageChecker:
             return values[0]
         else:
             values = self.info.loc[self.info['next_filename'] == filename, 'next_pos_idx'].values
-            return values[0]
+            return values[0] if len(values) else position.get_index('ON')
 
     def set_car_pos_idx(self, filename, idx):
         self.info.loc[self.info['cur_filename'] == filename, 'cur_pos_idx'] = idx
         self.info.loc[self.info['next_filename'] == filename, 'next_pos_idx'] = idx
-        speed_values = self.info.loc[self.info['next_filename'] == filename, 'next_speed'].values
-        if len(speed_values):
-            reward = position.compute_reward(idx, speed_values[0])
-            self.info.loc[self.info['next_filename'] == filename, 'reward'] = reward
+        reward = position.compute_reward(idx)
+        self.info.loc[self.info['next_filename'] == filename, 'reward'] = reward
 
     def change_image(self, step):
         self.pos_select()
@@ -86,7 +84,10 @@ class ImageChecker:
         img = ImageTk.PhotoImage(Image.open(self.img_full_path[self.index]))
         self.img_panel.configure(image=img)
         self.img_panel.image = img
-        self.window.title("{}/{}".format(self.index + 1, len(self.img_files)))
+        rewards_values = self.info.loc[
+            self.info['next_filename'] == self.img_files[self.index], 'reward'].values
+        reward = rewards_values[0] if len(rewards_values) else 0
+        self.window.title("{}/{} Rewards: {}".format(self.index + 1, len(self.img_files), reward))
         self.pos_var.set(self.get_car_pos_idx(self.img_files[self.index]))
 
     def next_image(self):
@@ -103,10 +104,11 @@ class ImageChecker:
     def select_pos(self, idx):
         self.pos_var.set(idx)
         self.pos_select()
+        self.next_image()
 
     def save_csv(self):
         print("save info to csv")
-        self.info.to_csv(self.csv_path)
+        self.info.to_csv(self.csv_path, index=False)
 
     def quit(self):
         self.save_csv()
@@ -114,6 +116,7 @@ class ImageChecker:
 
 
 IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS = 66, 200, 3
+IMAGE_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
 
 def process_image(img):
@@ -121,8 +124,9 @@ def process_image(img):
     image = cv2.resize(image, (160, 320), cv2.INTER_AREA)
     image = image[60:-25, :, :]
     image = cv2.resize(image, (IMAGE_WIDTH, IMAGE_HEIGHT), cv2.INTER_AREA)
-    # image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    return image.reshape(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2YUV)
+    # print(image.shape)
+    return image
 
 
 def load_data(img_folder, check=False):
@@ -143,7 +147,7 @@ def load_data(img_folder, check=False):
 
 def update_rewards(data_folder):
     def update(row):
-        return position.compute_reward(row['next_pos_idx'], row['next_speed'])
+        return position.compute_reward(row['next_pos_idx'])
 
     csv_path = os.path.join(data_folder, 'info.csv')
     info = pd.read_csv(csv_path)
@@ -151,13 +155,17 @@ def update_rewards(data_folder):
     info.to_csv(csv_path)
 
 
-data_folders = ['/Volumes/CPSC587DATA/RecordedImg20171108223209',
-                '/Volumes/CPSC587DATA/RecordedImg20171108225413',
-                '/Volumes/CPSC587DATA/RecordedImg20171108230542']
-
 if __name__ == '__main__':
+    root = '/Volumes/CPSC587DATA'
+    data_folders = [d for d in os.listdir(root) if d.startswith('RecordedImg2017')]
+    data_folders.sort()
     for folder in data_folders:
-        ImageChecker(folder)
-        # load_data(folder, True)
-        # update_rewards(folder)
+        print(folder)
+        folder = os.path.join(root, folder)
+        load_data(folder, True)
+        # csv_path = os.path.join(folder, 'info.csv')
+        # info = pd.read_csv(csv_path)
+        # cols = [c for c in info.columns if not c.startswith("Unnamed")]
+        # info.to_csv(csv_path + ".bak", index=False)
+        # info[cols].to_csv(csv_path, index=False)
     pass

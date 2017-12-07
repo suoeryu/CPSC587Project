@@ -1,28 +1,25 @@
 import csv
-import random
 import os
+import random
 from collections import deque
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import numpy as np
-
 from keras import Input
 from keras.engine import Model
-from keras.layers import Conv2D, BatchNormalization, Flatten, Dense, concatenate, MaxPooling2D
+from keras.layers import Conv2D, Flatten, Dense, Lambda, Dropout
 from keras.optimizers import Adam
 from keras.utils import to_categorical
 
 import position
 from action import ACTION_NUM
+from data_utils import IMAGE_SHAPE
 from position import POS_NUM
-from data_utils import IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS, load_data
 
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 32
 GAMMA = 0.99
-
-reward_dict = {'ON': 0.5, 'LEFT': -0.5, 'RIGHT': -0.5, 'OFF': -1}
 
 saved_h5_name = 'q_learning_model.h5'
 saved_json_name = 'q_learning_model.json'
@@ -53,6 +50,12 @@ class ReplayMemory:
 
     def __len__(self) -> int:
         return len(self.memory)
+
+    def reset(self):
+        self.memory.clear()
+        with open(self.csv_path, 'w') as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=self.csv_fieldnames)
+            writer.writeheader()
 
     def memorize(self, reward, img_orig, state, pos_idx, action) -> None:
         # print(state)
@@ -106,58 +109,47 @@ class ReplayMemory:
 
 
 def build_model(learn_rate=LEARNING_RATE):
-    print("Now we build the Q learning model")
-    input_img = Input(shape=(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS))
-    img_values = input_img
+    print("Now we build the Position Detect model")
+    inputs = Input(shape=IMAGE_SHAPE)
+    values = Lambda(lambda x: x / 127.5 - 1.0)(inputs)
 
-    conv_layer_1 = Conv2D(32, (8, 8), strides=(4, 4), padding='same', activation='relu')
-    img_values = conv_layer_1(img_values)
-    img_values = BatchNormalization()(img_values)
+    conv_layer_1 = Conv2D(24, (5, 5), strides=(2, 2), padding='same', activation='relu')
+    values = conv_layer_1(values)
 
-    conv_layer_2 = Conv2D(64, (4, 4), strides=(2, 2), padding='same', activation='relu')
-    img_values = conv_layer_2(img_values)
-    img_values = BatchNormalization()(img_values)
+    conv_layer_2 = Conv2D(36, (5, 5), strides=(2, 2), padding='same', activation='relu')
+    values = conv_layer_2(values)
 
-    conv_layer_3 = Conv2D(64, (3, 3), strides=(1, 1), padding='same', activation='relu')
-    img_values = conv_layer_3(img_values)
-    img_values = BatchNormalization()(img_values)
+    conv_layer_3 = Conv2D(48, (5, 5), strides=(2, 2), padding='same', activation='relu')
+    values = conv_layer_3(values)
 
-    max_poll_layer = MaxPooling2D(pool_size=(2, 2))
-    img_values = max_poll_layer(img_values)
+    conv_layer_4 = Conv2D(64, (3, 3), padding='same', activation='relu')
+    values = conv_layer_4(values)
 
-    img_values = Flatten()(img_values)
+    conv_layer_5 = Conv2D(64, (3, 3), padding='same', activation='relu')
+    values = conv_layer_5(values)
 
-    pos_values = BatchNormalization()(img_values)
-    pos_hidden_layer = Dense(64, activation='relu')
-    pos_values = pos_hidden_layer(pos_values)
+    # values = dropout(values, 0.5)
+    values = Dropout(0.5)(values)
 
-    pos_output_layer = Dense(POS_NUM, activation='relu')
-    output_pos = pos_output_layer(pos_values)
+    values = Flatten()(values)
 
-    input_info = Input(shape=(3,))
-    info_values = BatchNormalization()(input_info)
+    values = Dense(100, activation='relu')(values)
+    values = Dense(50, activation='relu')(values)
+    values = Dense(10, activation='relu')(values)
 
-    act_values = concatenate([img_values, info_values], axis=-1)
-    act_values = BatchNormalization()(act_values)
+    outputs = Dense(ACTION_NUM)(values)
 
-    act_hidden_layer = Dense(512, activation='relu')
-    act_values = act_hidden_layer(act_values)
-
-    act_output_layer = Dense(ACTION_NUM, activation='relu')
-    output_act = act_output_layer(act_values)
-
-    model = Model(inputs=[input_img, input_info], outputs=[output_pos, output_act])
+    model = Model(inputs=inputs, outputs=outputs)
 
     adam = Adam(lr=learn_rate)
-    model.compile(loss='mse', optimizer=adam)
+    model.compile(loss='mean_squared_error', optimizer=adam)
 
-    print("We finish building the Q learning model")
+    print("We finish building the Position Detect model")
     # model.summary()
     return model
 
 
-def train_model(model, data_folder, batch_size=BATCH_SIZE, check=False):
-    info, img_map = load_data(data_folder, check)
+def train_model(model, info, img_map, batch_size=BATCH_SIZE):
     n_rows = info.shape[0]
     for start in range(0, n_rows, batch_size):
         end = start + batch_size
@@ -165,26 +157,22 @@ def train_model(model, data_folder, batch_size=BATCH_SIZE, check=False):
             end = n_rows
         sl = slice(start, end)
         file_names = info['cur_filename'][sl]
-        input_img = np.concatenate([i for i in map(lambda x: img_map[x], file_names)], axis=0)
-        input_info = np.asarray(info[['cur_steering_angle', 'cur_throttle', 'cur_speed']][sl])
-        state = [input_img, input_info]
-        output_pos = to_categorical(info['cur_pos_idx'][sl], num_classes=POS_NUM)
-        _, output_act = model.predict([input_img, input_info])
-
-        next_imgs = [i for i in map(lambda x: img_map[x], info['next_filename'][sl])]
-        next_infos = np.asarray(info[['next_steering_angle', 'next_throttle', 'next_speed']][sl])
+        inputs = np.concatenate([i for i in map(lambda x: img_map[x], file_names)], axis=0)
+        outputs = model.predict(inputs)
+        next_inputs = [i for i in map(lambda x: img_map[x], info['next_filename'][sl])]
         for index, row in info[['cur_pos_idx', 'action', 'reward']][sl].iterrows():
             index = index - start
             action = int(row['action'])
             pos = position.get_label(int(row['cur_pos_idx']))
             reward = row['reward']
-            if pos == 'OFF':
-                output_act[index, action] = reward
+            orig = outputs[index, action]
+            if pos == 'ON':
+                next_state = next_inputs[index]
+                q_sa = model.predict(next_state)
+                outputs[index, action] = reward + GAMMA * np.max(q_sa)
             else:
-                next_state = [next_imgs[index], next_infos[index:index + 1]]
-                _, q_sa = model.predict(next_state)
-                output_act[index, action] = reward + GAMMA * np.max(q_sa)
-        output = [output_pos, output_act]
-        loss = model.train_on_batch(state, output)
-        print("Iter:{:4} Loss: {:.6f}, pos loss {:.6f} act loss {:.6f}".format(
-            int(start / batch_size), *loss))
+                outputs[index, action] = reward
+            # if index % 8 == 0:
+            #     print("\tAction {}, {} -> {}".format(action, orig, output[index, action]))
+        loss = model.train_on_batch(inputs, outputs)
+        print("Iter:{:4} Loss: {:.6f}".format(int(start / batch_size), loss))
