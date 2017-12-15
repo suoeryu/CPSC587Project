@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 from datetime import datetime
@@ -36,9 +35,9 @@ info, img_map = load_data(record_folder, check=True)
 
 pdm = pos_detect_model.build_model()
 load_model(pdm, pos_detect_model.saved_h5_name)
-pos_detect_model.train_model(pdm, info, img_map, n_epoch=10)
+# pos_detect_model.train_model(pdm, info, img_map, n_epoch=10)
 pos_detect_model.evaluate_model(pdm, record_folder)
-save_model(pdm, pos_detect_model.saved_h5_name)
+# save_model(pdm, pos_detect_model.saved_h5_name)
 
 qlm = q_learning_model.build_model()
 load_model(qlm, q_learning_model.saved_h5_name)

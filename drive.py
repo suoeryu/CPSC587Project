@@ -22,25 +22,20 @@ from data_utils import process_image
 sio = socketio.Server()
 app = Flask(__name__)
 
-FRAME_PER_ACTION = 1
-FINAL_EPSILON = 0.0001  # final value of epsilon
-INITIAL_EPSILON = 0.5  # starting value of epsilon
-EXPLORE = 3000000.  # frames over which to anneal epsilon
-
-t = 0
-epsilon = INITIAL_EPSILON
+RANDOM_ACTION_PROB = 0.2
 
 replay_memory = None
 
 qlm = None
 pdm = None
 
+t = 0
 control_value = None
 
 
 @sio.on('telemetry')
 def telemetry(sid, data):
-    global t, epsilon, control_value, replay_memory
+    global t, control_value, replay_memory
     try:
         if args.image_folder and not os.path.exists(args.image_folder):
             os.makedirs(args.image_folder)
@@ -71,30 +66,28 @@ def telemetry(sid, data):
                 reward = position.compute_reward(pos_idx)
 
                 if args.mode == 'hardcoded':
-                    msg = "{:6} Position  {:3} Hardcoded Action: {}->{}"
+                    msg = "{:6} {:5} Hardcoded Action: {}->{}"
                     action = get_hardcoded_action(pos_idx)
                 elif args.mode == 'drive':
-                    msg = "{:6} TESTING   {:3} Predict Action:   {}->{}"
+                    msg = "{:6} {:5} Predict   Action:   {}->{}"
                     action = np.argmax(qlm.predict(state_img), axis=1)[0]
                     if position.get_label(pos_idx) == 'LEFT' and action < 5:
+                        msg = "{:6} {:5} Hardcoded Action:   {}->{}"
                         action = get_hardcoded_action(pos_idx)
                     elif position.get_label(pos_idx) == 'RIGHT' and action > 3:
+                        msg = "{:6} {:5} Hardcoded Action:   {}->{}"
                         action = get_hardcoded_action(pos_idx)
                 else:
                     if position.get_label(pos_idx) == 'ON':
-                        if random.random() <= epsilon:
+                        if random.random() <= RANDOM_ACTION_PROB:
+                            msg = "{:6} {:5} Random    Action:   {}->{}"
                             action = get_random_action()
-                            msg = "{:6} EXPLORING {:3} Random Action:    {}->{}"
                         else:
+                            msg = "{:6} {:5} Predict   Action:   {}->{}"
                             action = np.argmax(qlm.predict(state_img), axis=1)[0]
-                            msg = "{:6} TESTING   {:3} Predict Action:   {}->{}"
                     else:
+                        msg = "{:6} {:5} Hardcoded Action:   {}->{}"
                         action = get_hardcoded_action(pos_idx)
-                        msg = "{:6} REPAIR    {:3} Predict Action:   {}->{}"
-
-                # We reduced the epsilon gradually
-                if epsilon > FINAL_EPSILON:
-                    epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
 
                 if args.mode != 'drive':
                     replay_memory.memorize(reward, img_orig, state, pos_idx, action)
